@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+    flowise-server:
+        image: flowise-server:latest
+        container_name: flowise-server
+        ports:
+            - '3000:3000'
+        environment:
+            - PORT=3000
+            - DATABASE_PATH=/root/.flowise
+            - APIKEY_PATH=/root/.flowise
+            - SECRETKEY_PATH=/root/.flowise
+            - LOG_PATH=/root/.flowise/logs
+            - BLOB_STORAGE_PATH=/root/.flowise/storage
+            - NODE_ENV=production
+        volumes:
+            - flowise_data:/root/.flowise
+        restart: unless-stopped
+        networks:
+            - flowise-network
+        healthcheck:
+            test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://localhost:3000/api/v1/ping']
+            interval: 30s
+            timeout: 10s
+            retries: 3
+            start_period: 40s
+
+    flowise-ui:
+        image: flowise-ui:latest
+        container_name: flowise-ui
+        ports:
+            - '8080:80'
+        environment:
+            - VITE_API_URL=http://localhost:3000
+        depends_on:
+            - flowise-server
+        restart: unless-stopped
+        networks:
+            - flowise-network
+
+networks:
+    flowise-network:
+        driver: bridge
+
+volumes:
+    flowise_data:
+        driver: local

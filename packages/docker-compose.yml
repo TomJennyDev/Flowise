@@ -1,0 +1,47 @@
+services:
+    flowise-server:
+        build:
+            context: ..
+            dockerfile: packages/server/Dockerfile
+        container_name: flowise-server
+        ports:
+            - '3000:3000'
+        environment:
+            - DATABASE_PATH=/root/.flowise
+            - APIKEY_PATH=/root/.flowise
+            - SECRETKEY_PATH=/root/.flowise
+            - LOG_PATH=/root/.flowise/logs
+            - BLOB_STORAGE_PATH=/root/.flowise/storage
+            # Add other environment variables as needed
+            # - DATABASE_TYPE=sqlite
+            # - DATABASE_HOST=
+            # - DATABASE_PORT=
+            # - DATABASE_USER=
+            # - DATABASE_PASSWORD=
+            # - DATABASE_NAME=
+        volumes:
+            - flowise-data:/root/.flowise
+        networks:
+            - flowise-network
+        restart: unless-stopped
+
+    flowise-ui:
+        build:
+            context: ..
+            dockerfile: packages/ui/Dockerfile
+        container_name: flowise-ui
+        ports:
+            - '8080:80'
+        depends_on:
+            - flowise-server
+        networks:
+            - flowise-network
+        restart: unless-stopped
+
+volumes:
+    flowise-data:
+        driver: local
+
+networks:
+    flowise-network:
+        driver: bridge
