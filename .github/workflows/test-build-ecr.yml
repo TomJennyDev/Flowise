@@ -1,0 +1,107 @@
+name: Test Build and Push to ECR
+
+on:
+    workflow_dispatch:
+        inputs:
+            tag_version:
+                description: 'Image tag (optional, default: test)'
+                type: string
+                required: false
+                default: 'test'
+            build_target:
+                description: 'What to build'
+                type: choice
+                required: true
+                default: 'both'
+                options:
+                    - both
+                    - server
+                    - ui
+
+env:
+    AWS_REGION: ap-southeast-1
+
+jobs:
+    # ============================================
+    # Job 1: Build and Push Server Image
+    # ============================================
+    build-server:
+        name: Build Server Image
+        runs-on: ubuntu-latest
+        if: github.event.inputs.build_target == 'both' || github.event.inputs.build_target == 'server'
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
+
+            - name: Configure AWS credentials
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+                  aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+                  aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+                  aws-region: ${{ env.AWS_REGION }}
+
+            - name: Login to Amazon ECR
+              id: login-ecr
+              uses: aws-actions/amazon-ecr-login@v2
+
+            - name: Build and push Server image
+              uses: docker/build-push-action@v5
+              with:
+                  context: .
+                  file: ./packages/server/Dockerfile
+                  platforms: linux/amd64
+                  push: true
+                  tags: |
+                      ${{ steps.login-ecr.outputs.registry }}/flowise-server:${{ github.event.inputs.tag_version }}
+                      ${{ steps.login-ecr.outputs.registry }}/flowise-server:latest
+
+            - name: Success
+              run: |
+                  echo "✅ Server image pushed successfully!"
+                  echo "📦 Image: ${{ steps.login-ecr.outputs.registry }}/flowise-server:${{ github.event.inputs.tag_version }}"
+
+    # ============================================
+    # Job 2: Build and Push UI Image
+    # ============================================
+    build-ui:
+        name: Build UI Image
+        runs-on: ubuntu-latest
+        if: github.event.inputs.build_target == 'both' || github.event.inputs.build_target == 'ui'
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
+
+            - name: Configure AWS credentials
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+                  aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+                  aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+                  aws-region: ${{ env.AWS_REGION }}
+
+            - name: Login to Amazon ECR
+              id: login-ecr
+              uses: aws-actions/amazon-ecr-login@v2
+
+            - name: Build and push UI image
+              uses: docker/build-push-action@v5
+              with:
+                  context: .
+                  file: ./packages/ui/Dockerfile
+                  platforms: linux/amd64
+                  push: true
+                  tags: |
+                      ${{ steps.login-ecr.outputs.registry }}/flowise-ui:${{ github.event.inputs.tag_version }}
+                      ${{ steps.login-ecr.outputs.registry }}/flowise-ui:latest
+
+            - name: Success
+              run: |
+                  echo "✅ UI image pushed successfully!"
+                  echo "📦 Image: ${{ steps.login-ecr.outputs.registry }}/flowise-ui:${{ github.event.inputs.tag_version }}"
