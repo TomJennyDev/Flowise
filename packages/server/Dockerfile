@@ -2,13 +2,17 @@
 FROM node:20-alpine AS builder
 
 # Install build dependencies
-RUN apk add --no-cache \
-    python3 \
-    make \
-    g++ \
-    build-base \
-    cairo-dev \
-    pango-dev
+RUN apk update && \
+    apk add --no-cache \
+        libc6-compat \
+        python3 \
+        make \
+        g++ \
+        build-base \
+        cairo-dev \
+        pango-dev \
+        chromium \
+        curl
 
 # Install pnpm
 RUN npm install -g pnpm
@@ -19,7 +23,7 @@ ENV NODE_OPTIONS="--max-old-space-size=4096"
 WORKDIR /app
 
 # Copy workspace configuration
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 
 # Copy all packages (preserve monorepo structure)
 COPY packages ./packages
@@ -29,23 +33,24 @@ RUN pnpm install --no-frozen-lockfile
 
 # Build all packages in correct order (pnpm handles dependencies)
 RUN pnpm --filter flowise-components build
-RUN pnpm --filter flowise-server build
+RUN pnpm --filter flowise build
 
 # Production stage
 FROM node:20-alpine
 
 # Install runtime dependencies
-RUN apk add --no-cache \
-    chromium \
-    nss \
-    freetype \
-    harfbuzz \
-    ca-certificates \
-    ttf-freefont \
-    cairo \
-    pango \
-    nodejs \
-    curl
+RUN apk update && \
+    apk add --no-cache \
+        libc6-compat \
+        python3 \
+        make \
+        g++ \
+        build-base \
+        cairo-dev \
+        pango-dev \
+        chromium \
+        curl
+
 
 # Set Chromium path
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
@@ -56,13 +61,10 @@ RUN npm install -g pnpm
 
 WORKDIR /app
 
-# Copy workspace structure from builder
-COPY --from=builder /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./
+# Copy built artifacts and node_modules from builder
+COPY --from=builder /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml /app/.npmrc ./
 COPY --from=builder /app/packages ./packages
-
-# Install production dependencies at workspace root
-# This ensures proper pnpm workspace resolution
-RUN pnpm install --prod --no-frozen-lockfile
+COPY --from=builder /app/node_modules ./node_modules
 
 # Set working directory to server (but keep workspace context)
 WORKDIR /app/packages/server
@@ -70,5 +72,5 @@ WORKDIR /app/packages/server
 # Expose port
 EXPOSE 3000
 
-# Start server from workspace root context
-CMD ["node", "/app/packages/server/bin/run", "start"]
+# Start server using oclif CLI
+CMD ["node", "./bin/run", "start"]

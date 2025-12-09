@@ -12,7 +12,7 @@ WORKDIR /app
 # Copy entire workspace
 COPY . .
 
-# Install all dependencies
+# Install all dependencies (disable husky git hooks)
 RUN pnpm install
 
 # Build UI
