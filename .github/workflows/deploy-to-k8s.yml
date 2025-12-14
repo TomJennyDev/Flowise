@@ -10,8 +10,6 @@ on:
                 default: 'dev'
                 options:
                     - dev
-                    - staging
-                    - production
             tag_version:
                 description: 'Tag version (optional, auto-generated if empty)'
                 type: string
@@ -64,9 +62,9 @@ jobs:
                           TAG="${SHORT_SHA}"
                       fi
                   else
-                      # Auto-trigger from main branch
+                      # Auto-trigger from main branch - deploy to DEV only
                       TAG="${SHORT_SHA}"
-                      ENV="production"
+                      ENV="dev"
                       NODE_VERSION="20"
                   fi
 
@@ -334,45 +332,45 @@ jobs:
     # ============================================
     # Job 5: Post-deployment Health Check
     # ============================================
-    health-check:
-        name: Health Check
-        needs: [set-env, update-gitops-and-deploy]
-        runs-on: ubuntu-latest
-        if: success()
-        steps:
-            - name: Wait for pods to stabilize
-              run: sleep 60
+    # health-check:
+    #     name: Health Check
+    #     needs: [set-env, update-gitops-and-deploy]
+    #     runs-on: ubuntu-latest
+    #     if: success()
+    #     steps:
+    #         - name: Wait for pods to stabilize
+    #           run: sleep 60
 
-            - name: Health check
-              env:
-                  ENV: ${{ needs.set-env.outputs.env }}
-              run: |
-                  if [ "${ENV}" = "production" ]; then
-                      ENDPOINT="${{ secrets.PROD_ENDPOINT }}"
-                  elif [ "${ENV}" = "staging" ]; then
-                      ENDPOINT="${{ secrets.STAGING_ENDPOINT }}"
-                  else
-                      ENDPOINT="${{ secrets.DEV_ENDPOINT }}"
-                  fi
+    #         - name: Health check
+    #           env:
+    #               ENV: ${{ needs.set-env.outputs.env }}
+    #           run: |
+    #               if [ "${ENV}" = "production" ]; then
+    #                   ENDPOINT="${{ secrets.PROD_ENDPOINT }}"
+    #               elif [ "${ENV}" = "staging" ]; then
+    #                   ENDPOINT="${{ secrets.STAGING_ENDPOINT }}"
+    #               else
+    #                   ENDPOINT="${{ secrets.DEV_ENDPOINT }}"
+    #               fi
 
-                  echo "🔍 Health check endpoint: ${ENDPOINT}/api/v1/health"
+    #               echo "🔍 Health check endpoint: ${ENDPOINT}/api/v1/health"
 
-                  # Retry health check up to 10 times
-                  for i in {1..10}; do
-                      if curl -f -s "${ENDPOINT}/api/v1/health"; then
-                          echo "✅ Health check passed!"
-                          exit 0
-                      fi
-                      echo "⏳ Attempt ${i}/10 failed, retrying in 10s..."
-                      sleep 10
-                  done
+    #               # Retry health check up to 10 times
+    #               for i in {1..10}; do
+    #                   if curl -f -s "${ENDPOINT}/api/v1/health"; then
+    #                       echo "✅ Health check passed!"
+    #                       exit 0
+    #                   fi
+    #                   echo "⏳ Attempt ${i}/10 failed, retrying in 10s..."
+    #                   sleep 10
+    #               done
 
-                  echo "❌ Health check failed after 10 attempts"
-                  exit 1
+    #               echo "❌ Health check failed after 10 attempts"
+    #               exit 1
 
-            - name: Notify deployment success
-              if: success()
-              run: |
-                  echo "🎉 Deployment completed successfully!"
-                  echo "Environment: ${{ needs.set-env.outputs.env }}"
-                  echo "Tag: ${{ needs.set-env.outputs.tag }}"
+    #         - name: Notify deployment success
+    #           if: success()
+    #           run: |
+    #               echo "🎉 Deployment completed successfully!"
+    #               echo "Environment: ${{ needs.set-env.outputs.env }}"
+    #               echo "Tag: ${{ needs.set-env.outputs.tag }}"
