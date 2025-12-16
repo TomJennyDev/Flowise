@@ -137,6 +137,24 @@ jobs:
                   cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/flowise-server:buildcache
                   cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/flowise-server:buildcache,mode=max
 
+            # Get image digest for immutable reference
+            - name: Get image digest
+              id: get-digest
+              env:
+                  AWS_REGION: ${{ env.AWS_REGION }}
+              run: |
+                  echo "🔍 Getting image digest from ECR..."
+
+                  DIGEST=$(aws ecr describe-images \
+                      --repository-name flowise-server \
+                      --image-ids imageTag=${{ needs.set-env.outputs.tag }} \
+                      --region ${AWS_REGION} \
+                      --query 'imageDetails[0].imageDigest' \
+                      --output text)
+
+                  echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
+                  echo "✅ Image Digest: ${DIGEST}"
+
     # ============================================
     # Job 3: Build and Push UI Image
     # ============================================
@@ -149,6 +167,7 @@ jobs:
             id-token: write
         outputs:
             image_uri: ${{ steps.image-uri.outputs.uri }}
+            image_digest: ${{ steps.get-digest.outputs.digest }}
         steps:
             - name: Checkout
               uses: actions/checkout@v4
@@ -192,6 +211,24 @@ jobs:
                   cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/flowise-ui:buildcache
                   cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/flowise-ui:buildcache,mode=max
 
+            # Get image digest for immutable reference
+            - name: Get image digest
+              id: get-digest
+              env:
+                  AWS_REGION: ${{ env.AWS_REGION }}
+              run: |
+                  echo "🔍 Getting image digest from ECR..."
+
+                  DIGEST=$(aws ecr describe-images \
+                      --repository-name flowise-ui \
+                      --image-ids imageTag=${{ needs.set-env.outputs.tag }} \
+                      --region ${AWS_REGION} \
+                      --query 'imageDetails[0].imageDigest' \
+                      --output text)
+
+                  echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
+                  echo "✅ Image Digest: ${DIGEST}"
+
     # ============================================
     # Job 4: Update Kustomize and Trigger ArgoCD
     # ============================================
@@ -208,28 +245,55 @@ jobs:
                   token: ${{ secrets.GITOPS_TOKEN }}
                   path: gitops
 
+            # Configure AWS credentials for digest lookup
+            - name: Configure AWS credentials
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+                  aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+                  aws-region: ${{ env.AWS_REGION }}
+
+            - name: Login to Amazon ECR
+              id: login-ecr
+              uses: aws-actions/amazon-ecr-login@v2
+
             # Install kustomize
             - name: Setup Kustomize
               uses: imranismail/setup-kustomize@v2
 
-            # Update image tags
-            - name: Update image tags in Kustomize
+            # Update image tags with digest
+            - name: Update images with digest in Kustomize
               run: |
                   cd gitops/${{ needs.set-env.outputs.overlay_path }}
 
                   TAG="${{ needs.set-env.outputs.tag }}"
-                  SERVER_IMAGE="${{ needs.build-server.outputs.image_uri }}"
-                  UI_IMAGE="${{ needs.build-ui.outputs.image_uri }}"
+                  REGISTRY="${{ steps.login-ecr.outputs.registry }}"
+                  SERVER_DIGEST="${{ needs.build-server.outputs.image_digest }}"
+                  UI_DIGEST="${{ needs.build-ui.outputs.image_digest }}"
 
-                  echo "📝 Updating images:"
-                  echo "  Server: ${SERVER_IMAGE}"
-                  echo "  UI: ${UI_IMAGE}"
+                  echo "📝 Updating images with digest (immutable):"
+                  echo "  Server Tag: ${TAG}"
+                  echo "  Server Digest: ${SERVER_DIGEST}"
+                  echo "  UI Tag: ${TAG}"
+                  echo "  UI Digest: ${UI_DIGEST}"
+                  echo ""
 
-                  # Update server image
-                  kustomize edit set image flowise-server=${SERVER_IMAGE}
+                  # Update with digest for immutable deployments
+                  # Format: registry/image@sha256:digest
+                  SERVER_IMAGE_WITH_DIGEST="372836560690.dkr.ecr.ap-southeast-1.amazonaws.com/flowise-server@${SERVER_DIGEST}"
+                  UI_IMAGE_WITH_DIGEST="372836560690.dkr.ecr.ap-southeast-1.amazonaws.com/flowise-ui@${UI_DIGEST}"
 
-                  # Update UI image
-                  kustomize edit set image flowise-ui=${UI_IMAGE}
+                  echo "🔐 Final image references:"
+                  echo "  Server: ${SERVER_IMAGE_WITH_DIGEST}"
+                  echo "  UI: ${UI_IMAGE_WITH_DIGEST}"
+                  echo ""
+
+                  # Update kustomization with digest
+                  kustomize edit set image flowise-server=${SERVER_IMAGE_WITH_DIGEST}
+                  kustomize edit set image flowise-ui=${UI_IMAGE_WITH_DIGEST}
+
+                  # Also update with tag for reference (comment)
+                  sed -i "s|# Tag:.*|# Tag: ${TAG} (Digest: ${SERVER_DIGEST:0:12}...)|" kustomization.yaml || true
 
                   echo ""
                   echo "✅ Updated kustomization.yaml:"
