@@ -15,6 +15,9 @@ rpc error: code = Unauthenticated desc = invalid session: token signature is inv
 ### Step 1: Generate New ArgoCD Token
 
 ```bash
+
+
+
 # Login to ArgoCD
 argocd login argocd.yourdomain.com --username admin
 
