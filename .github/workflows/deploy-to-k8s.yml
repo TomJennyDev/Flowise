@@ -1,4 +1,4 @@
-name: Deploy to Kubernetes via ArgoCD
+name: Build and Push Flowise Images
 
 on:
     workflow_dispatch:
@@ -10,10 +10,8 @@ on:
                 default: 'dev'
                 options:
                     - dev
-            tag_version:
-                description: 'Tag version (optional, auto-generated if empty)'
-                type: string
-                required: false
+                    - staging
+                    - production
             node_version:
                 description: 'Node.js version'
                 type: choice
@@ -44,42 +42,34 @@ jobs:
             tag: ${{ steps.set-vars.outputs.tag }}
             env: ${{ steps.set-vars.outputs.env }}
             node_version: ${{ steps.set-vars.outputs.node_version }}
-            overlay_path: ${{ steps.set-vars.outputs.overlay_path }}
         steps:
             - name: Set variables
               id: set-vars
               run: |
-                  # Get short SHA for tagging
+                  # Get short SHA for tagging (7 chars)
                   SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
 
-                  # Determine environment and tag (always use SHA)
+                  # Determine environment and Node version
                   if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
                       ENV="${{ github.event.inputs.environment }}"
                       NODE_VERSION="${{ github.event.inputs.node_version }}"
-                      if [ -n "${{ github.event.inputs.tag_version }}" ]; then
-                          TAG="${{ github.event.inputs.tag_version }}-${SHORT_SHA}"
-                      else
-                          TAG="${SHORT_SHA}"
-                      fi
                   else
                       # Auto-trigger from main branch - deploy to DEV only
-                      TAG="${SHORT_SHA}"
                       ENV="dev"
                       NODE_VERSION="20"
                   fi
 
-                  OVERLAY_PATH="argocd/apps/flowise/overlays/${ENV}"
+                  # Tag is always the short SHA
+                  TAG="${SHORT_SHA}"
 
                   echo "tag=${TAG}" >> $GITHUB_OUTPUT
                   echo "env=${ENV}" >> $GITHUB_OUTPUT
                   echo "node_version=${NODE_VERSION}" >> $GITHUB_OUTPUT
-                  echo "overlay_path=${OVERLAY_PATH}" >> $GITHUB_OUTPUT
 
                   echo "🏷️ Tag: ${TAG}"
-                  echo "🔖 SHA: ${{ github.sha }}"
+                  echo "🔖 Full SHA: ${{ github.sha }}"
                   echo "🌍 Environment: ${ENV}"
                   echo "📦 Node Version: ${NODE_VERSION}"
-                  echo "📂 Overlay Path: ${OVERLAY_PATH}"
 
     # ============================================
     # Job 2: Build and Push Server Image
@@ -93,6 +83,7 @@ jobs:
             id-token: write
         outputs:
             image_uri: ${{ steps.image-uri.outputs.uri }}
+            image_digest: ${{ steps.get-digest.outputs.digest }}
         steps:
             - name: Checkout
               uses: actions/checkout@v4
@@ -230,254 +221,43 @@ jobs:
                   echo "✅ Image Digest: ${DIGEST}"
 
     # ============================================
-    # Job 4: Update Kustomize and Trigger ArgoCD
+    # Job 4: Trigger DevOps Repo to Update Deployment
     # ============================================
-    update-gitops-and-deploy:
-        name: Update GitOps & Trigger ArgoCD
+    trigger-gitops-repo:
+        name: Trigger DevOps Repo
         needs: [set-env, build-server, build-ui]
         runs-on: ubuntu-latest
         steps:
-            # Checkout GitOps repository
-            - name: Checkout GitOps repository
-              uses: actions/checkout@v4
+            - name: Trigger repository_dispatch to DevOps repo
+              uses: peter-evans/repository-dispatch@v3
               with:
-                  repository: ${{ env.GITOPS_REPO }}
                   token: ${{ secrets.GITOPS_TOKEN }}
-                  path: gitops
+                  repository: ${{ env.GITOPS_REPO }}
+                  event-type: flowise-image-updated
+                  client-payload: |
+                      {
+                        "environment": "${{ needs.set-env.outputs.env }}",
+                        "tag": "${{ needs.set-env.outputs.tag }}",
+                        "sha": "${{ github.sha }}",
+                        "server_digest": "${{ needs.build-server.outputs.image_digest }}",
+                        "ui_digest": "${{ needs.build-ui.outputs.image_digest }}",
+                        "actor": "${{ github.actor }}",
+                        "workflow_run_id": "${{ github.run_id }}"
+                      }
 
-            # Configure AWS credentials for digest lookup
-            - name: Configure AWS credentials
-              uses: aws-actions/configure-aws-credentials@v4
-              with:
-                  aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-                  aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-                  aws-region: ${{ env.AWS_REGION }}
-
-            - name: Login to Amazon ECR
-              id: login-ecr
-              uses: aws-actions/amazon-ecr-login@v2
-
-            # Install kustomize
-            - name: Setup Kustomize
-              uses: imranismail/setup-kustomize@v2
-
-            # Update image tags with digest
-            - name: Update images with digest in Kustomize
+            - name: Deployment triggered
               run: |
-                  cd gitops/${{ needs.set-env.outputs.overlay_path }}
-
-                  TAG="${{ needs.set-env.outputs.tag }}"
-                  REGISTRY="${{ steps.login-ecr.outputs.registry }}"
-                  SERVER_DIGEST="${{ needs.build-server.outputs.image_digest }}"
-                  UI_DIGEST="${{ needs.build-ui.outputs.image_digest }}"
-
-                  echo "📝 Updating images with digest (immutable):"
-                  echo "  Server Tag: ${TAG}"
-                  echo "  Server Digest: ${SERVER_DIGEST}"
-                  echo "  UI Tag: ${TAG}"
-                  echo "  UI Digest: ${UI_DIGEST}"
+                  echo "✅ Triggered DevOps repo to update deployment"
                   echo ""
-
-                  # Update with digest for immutable deployments
-                  # Format: registry/image@sha256:digest
-                  SERVER_IMAGE_WITH_DIGEST="372836560690.dkr.ecr.ap-southeast-1.amazonaws.com/flowise-server@${SERVER_DIGEST}"
-                  UI_IMAGE_WITH_DIGEST="372836560690.dkr.ecr.ap-southeast-1.amazonaws.com/flowise-ui@${UI_DIGEST}"
-
-                  echo "🔐 Final image references:"
-                  echo "  Server: ${SERVER_IMAGE_WITH_DIGEST}"
-                  echo "  UI: ${UI_IMAGE_WITH_DIGEST}"
+                  echo "📦 Images built:"
+                  echo "  Server: ${{ needs.build-server.outputs.image_uri }}"
+                  echo "  Server Digest: ${{ needs.build-server.outputs.image_digest }}"
+                  echo "  UI: ${{ needs.build-ui.outputs.image_uri }}"
+                  echo "  UI Digest: ${{ needs.build-ui.outputs.image_digest }}"
                   echo ""
-
-                  # Update kustomization with digest
-                  kustomize edit set image flowise-server=${SERVER_IMAGE_WITH_DIGEST}
-                  kustomize edit set image flowise-ui=${UI_IMAGE_WITH_DIGEST}
-
-                  # Also update with tag for reference (comment)
-                  sed -i "s|# Tag:.*|# Tag: ${TAG} (Digest: ${SERVER_DIGEST:0:12}...)|" kustomization.yaml || true
-
+                  echo "🏷️ Tag: ${{ needs.set-env.outputs.tag }}"
+                  echo "🌍 Environment: ${{ needs.set-env.outputs.env }}"
+                  echo "🔖 SHA: ${{ github.sha }}"
                   echo ""
-                  echo "🔄 Adding timestamp annotation to force pod restart..."
-
-                  # Create/update deployment patch with timestamp annotation
-                  TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-
-                  cat > deployment-restart-patch.yaml <<EOF
-                  apiVersion: apps/v1
-                  kind: Deployment
-                  metadata:
-                    name: flowise-server
-                  spec:
-                    template:
-                      metadata:
-                        annotations:
-                          kubectl.kubernetes.io/restartedAt: "${TIMESTAMP}"
-                  ---
-                  apiVersion: apps/v1
-                  kind: Deployment
-                  metadata:
-                    name: flowise-ui
-                  spec:
-                    template:
-                      metadata:
-                        annotations:
-                          kubectl.kubernetes.io/restartedAt: "${TIMESTAMP}"
-                  EOF
-
-                  # Add patch to kustomization if not already there
-                  if ! grep -q "deployment-restart-patch.yaml" kustomization.yaml; then
-                      # Add to patchesStrategicMerge section
-                      if grep -q "patchesStrategicMerge:" kustomization.yaml; then
-                          sed -i '/patchesStrategicMerge:/a\- deployment-restart-patch.yaml' kustomization.yaml
-                      else
-                          echo -e "\npatchesStrategicMerge:\n- deployment-restart-patch.yaml" >> kustomization.yaml
-                      fi
-                  fi
-
-                  echo "✅ Timestamp annotation added: ${TIMESTAMP}"
-                  echo ""
-                  echo "📄 Updated kustomization.yaml:"
-                  cat kustomization.yaml
-                  echo ""
-                  echo "📄 Restart patch:"
-                  cat deployment-restart-patch.yaml
-
-            # Commit and push changes
-            - name: Commit and push to GitOps repo
-              run: |
-                  cd gitops
-
-                  git config user.name "github-actions[bot]"
-                  git config user.email "github-actions[bot]@users.noreply.github.com"
-
-                  git add ${{ needs.set-env.outputs.overlay_path }}/kustomization.yaml
-                  git add ${{ needs.set-env.outputs.overlay_path }}/deployment-restart-patch.yaml
-
-                  if git diff --staged --quiet; then
-                      echo "⚠️ No changes detected, skipping commit"
-                      exit 0
-                  fi
-
-                  git commit -m "chore(${{ needs.set-env.outputs.env }}): update images to ${{ needs.set-env.outputs.tag }}"
-                  git push origin main
-
-                  echo "✅ Changes pushed to GitOps repository"
-
-            # Trigger ArgoCD sync
-            - name: Install ArgoCD CLI
-              run: |
-                  curl -sSL -o argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
-                  chmod +x argocd
-                  sudo mv argocd /usr/local/bin/
-                  argocd version --client
-
-            - name: Trigger ArgoCD sync and wait
-              env:
-                  ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
-                  ARGOCD_USERNAME: admin
-                  ARGOCD_PASSWORD: ${{ secrets.ARGOCD_PASSWORD }}
-                  ENV: ${{ needs.set-env.outputs.env }}
-              run: |
-                  APP_NAME="flowise-${ENV}"
-
-                  echo "🔐 Logging in to ArgoCD..."
-                  argocd login ${ARGOCD_SERVER} \
-                      --username ${ARGOCD_USERNAME} \
-                      --password ${ARGOCD_PASSWORD} \
-                      --grpc-web \
-                      --insecure
-
-                  echo "🔄 Triggering ArgoCD sync for: ${APP_NAME}"
-
-                  # Refresh app to detect changes
-                  argocd app get ${APP_NAME} --refresh --grpc-web > /dev/null || true
-
-                  # Trigger sync
-                  argocd app sync ${APP_NAME} \
-                      --grpc-web \
-                      --prune \
-                      --force
-
-                  echo ""
-                  echo "⏳ Waiting for deployment to complete..."
-
-                  # Wait for healthy status
-                  argocd app wait ${APP_NAME} \
-                      --grpc-web \
-                      --health \
-                      --timeout 600
-
-                  echo ""
-                  echo "✅ Deployment completed successfully!"
-
-            # Get final status
-            - name: Show deployment summary
-              if: always()
-              env:
-                  ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
-                  ARGOCD_USERNAME: admin
-                  ARGOCD_PASSWORD: ${{ secrets.ARGOCD_PASSWORD }}
-                  ENV: ${{ needs.set-env.outputs.env }}
-              run: |
-                  APP_NAME="flowise-${ENV}"
-
-                  # Re-login in case of session timeout
-                  argocd login ${ARGOCD_SERVER} \
-                      --username ${ARGOCD_USERNAME} \
-                      --password ${ARGOCD_PASSWORD} \
-                      --grpc-web \
-                      --insecure > /dev/null 2>&1 || true
-
-                  echo "📊 Deployment Summary:"
-                  echo "═══════════════════════════════════════"
-                  argocd app get ${APP_NAME} --grpc-web || echo "Failed to get app status"
-
-                  echo ""
-                  echo "📝 Resource Status:"
-                  echo "═══════════════════════════════════════"
-                  argocd app resources ${APP_NAME} --grpc-web || echo "Failed to get resources"
-
-    # ============================================
-    # Job 5: Post-deployment Health Check
-    # ============================================
-    # health-check:
-    #     name: Health Check
-    #     needs: [set-env, update-gitops-and-deploy]
-    #     runs-on: ubuntu-latest
-    #     if: success()
-    #     steps:
-    #         - name: Wait for pods to stabilize
-    #           run: sleep 60
-
-    #         - name: Health check
-    #           env:
-    #               ENV: ${{ needs.set-env.outputs.env }}
-    #           run: |
-    #               if [ "${ENV}" = "production" ]; then
-    #                   ENDPOINT="${{ secrets.PROD_ENDPOINT }}"
-    #               elif [ "${ENV}" = "staging" ]; then
-    #                   ENDPOINT="${{ secrets.STAGING_ENDPOINT }}"
-    #               else
-    #                   ENDPOINT="${{ secrets.DEV_ENDPOINT }}"
-    #               fi
-
-    #               echo "🔍 Health check endpoint: ${ENDPOINT}/api/v1/health"
-
-    #               # Retry health check up to 10 times
-    #               for i in {1..10}; do
-    #                   if curl -f -s "${ENDPOINT}/api/v1/health"; then
-    #                       echo "✅ Health check passed!"
-    #                       exit 0
-    #                   fi
-    #                   echo "⏳ Attempt ${i}/10 failed, retrying in 10s..."
-    #                   sleep 10
-    #               done
-
-    #               echo "❌ Health check failed after 10 attempts"
-    #               exit 1
-
-    #         - name: Notify deployment success
-    #           if: success()
-    #           run: |
-    #               echo "🎉 Deployment completed successfully!"
-    #               echo "Environment: ${{ needs.set-env.outputs.env }}"
-    #               echo "Tag: ${{ needs.set-env.outputs.tag }}"
+                  echo "📡 DevOps repo will receive the trigger and update kustomization.yaml"
+                  echo "🔄 ArgoCD will auto-sync and deploy the new images to EKS"
